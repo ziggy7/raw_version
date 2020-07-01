@@ -143,7 +143,7 @@ connectionRAII::connectionRAII(MYSQL **SQL, connection_pool * connPool)
 {
     //从池对象的getconnection的返回值获得连接
     *SQL = connPool->GetConnection();
-    printf("调用connectionRAII构造函数\n");
+    //printf("调用connectionRAII构造函数\n");
     conRAII = *SQL;
     poolRAII = connPool;
 }
@@ -151,5 +151,5 @@ connectionRAII::connectionRAII(MYSQL **SQL, connection_pool * connPool)
 connectionRAII::~connectionRAII()
 {
     poolRAII->ReleaseConnection(conRAII);
-    printf("调用connectionRAII析构函数\n");
+    //printf("调用connectionRAII析构函数\n");
 }

@@ -13,13 +13,11 @@
 #include "lock/locker.h"
 #include "threadpool/threadpool.h"
 #include "http_conn/http_conn.h"
-#include "timer/lst_timer.h"
 #include "./log/log.h"
+#include "timer/minheap_timer.h"
 
 #define MAX_FD 65536
 #define MAX_EVENT_NUMBER 10000
-//时间间隔
-#define TIMESLOT 5
 
 #define SYNSQL
 
@@ -33,7 +31,11 @@ extern int setnonblocking(int fd);
 
 //定时器相关参数
 static int pipefd[2];
-static sort_timer_lst timer_lst;
+
+//创建时间堆
+static time_heap timer_heap(10000);
+
+
 static int epollfd = 0;
 
 //信号处理函数
@@ -63,8 +65,9 @@ void addsig( int sig, void( handler )(int), bool restart = true )
 void timer_handler()
 {
     //tick处理到期定时器
-    timer_lst.tick();
-    alarm(TIMESLOT);
+    timer_heap.tick();
+    alarm(timer_heap.top()->expire - time(NULL));
+    
 }
 
 //定时器回调函数，删除连接资源
@@ -169,7 +172,6 @@ int main( int argc, char* argv[] )
     client_data *users_timer = new client_data[MAX_FD];
 
     bool timeout = false;
-    alarm(TIMESLOT);
 
     while( !stop_server )
     {
@@ -205,27 +207,25 @@ int main( int argc, char* argv[] )
                 //数据，添加定时器到链表
                 users_timer[connfd].address = client_address;
                 users_timer[connfd].sockfd = connfd;
-                util_timer* timer = new util_timer;
+                heap_timer* timer = new heap_timer(30);
                 timer->user_data = &users_timer[connfd];
+                //定时器回调函数指针设为cb_func
                 timer->cb_func = cb_func;
-                time_t cur = time(NULL);
-                timer->expire = cur + 3 * TIMESLOT;
                 users_timer[connfd].timer = timer;
-                timer_lst.add_timer(timer);
+                timer_heap.add_timer(timer);
                 
             }
             else if( events[i].events & ( EPOLLRDHUP | EPOLLHUP | EPOLLERR ) )
             {
                 //服务器关闭连接，移除相应定时器
-                util_timer* timer = users_timer[sockfd].timer;
+                heap_timer* timer = users_timer[sockfd].timer;
                 timer->cb_func(&users_timer[sockfd]);
                 if(timer)
-                    timer_lst.del_timer(timer);
+                    timer_heap.del_timer(timer);
             }
             //处理管道的信号
             else if((sockfd == pipefd[0]) && events[i].events & EPOLLIN)
             {
-                int sig;
                 char signals[1024];
                 ret = recv(pipefd[0], signals, sizeof(signals), 0);
                 if(ret == -1)
@@ -254,7 +254,7 @@ int main( int argc, char* argv[] )
             else if( events[i].events & EPOLLIN )
             {
                 //获取该连接的定时器
-                util_timer* timer = users_timer[sockfd].timer;
+                heap_timer* timer = users_timer[sockfd].timer;
                 if( users[sockfd].read() )
                 {
                     LOG_INFO("deal with the client(%s)", inet_ntoa(users[sockfd].get_address()->sin_addr));
@@ -263,11 +263,18 @@ int main( int argc, char* argv[] )
                     //延长定时器并调整
                     if(timer)
                     {
-                        time_t cur = time(NULL);
-                        time_t expire = cur + 3 * TIMESLOT;
+                        //删除旧的定时器，并加入新的
+                        timer_heap.del_timer(timer);
+                        heap_timer* timer = new heap_timer(30);
+                        timer->user_data = &users_timer[sockfd];
+                        //定时器回调函数指针设为cb_func
+                        timer->cb_func = cb_func;
+                        users_timer[sockfd].timer = timer;
+                        timer_heap.add_timer(timer);
+
                         LOG_INFO("%s", "adjust timer once");
                         Log::get_instance()->flush();
-                        timer_lst.adjust_timer(timer);
+                         
                     }
                 }
                 else
@@ -275,24 +282,31 @@ int main( int argc, char* argv[] )
                     timer->cb_func(&users_timer[sockfd]);
                     if (timer)
                     {
-                        timer_lst.del_timer(timer);
+                        timer_heap.del_timer(timer);
                     }
                 }
             }
             else if( events[i].events & EPOLLOUT )
             {
-                util_timer *timer = users_timer[sockfd].timer;
+                heap_timer *timer = users_timer[sockfd].timer;
                 if( users[sockfd].write() )
                 {
                     LOG_INFO("send data to the client(%s)", inet_ntoa(users[sockfd].get_address()->sin_addr));
                     Log::get_instance()->flush();
                     if (timer)
                     {
-                        time_t cur = time(NULL);
-                        timer->expire = cur + 3 * TIMESLOT;
+                        //删除旧的定时器，并加入新的
+                        timer_heap.del_timer(timer);
+                        heap_timer* timer = new heap_timer(30);
+                        timer->user_data = &users_timer[sockfd];
+                        //定时器回调函数指针设为cb_func
+                        timer->cb_func = cb_func;
+                        users_timer[sockfd].timer = timer;
+                        timer_heap.add_timer(timer);
+
                         LOG_INFO("%s", "adjust timer once");
                         Log::get_instance()->flush();
-                        timer_lst.adjust_timer(timer);
+    
                     }
                 }
                 else
@@ -300,7 +314,7 @@ int main( int argc, char* argv[] )
                     timer->cb_func(&users_timer[sockfd]);
                     if(timer)
                     {
-                        timer_lst.del_timer(timer);
+                        timer_heap.del_timer(timer);
                     }
                 }
             }

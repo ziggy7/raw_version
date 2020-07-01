@@ -21,7 +21,7 @@ public:
         return &instance;
     }
 
-    //线程调用的静态函数
+    //线程调用的静态函数,void *
     static void *flush_log_thread(void *args)
     {
         Log::get_instance()->async_write_log();
